@@ -1,4 +1,4 @@
 interface:
   display_name: "AI Artifact Cleanup"
-  short_description: "Clean AI-generated clutter and tool caches safely"
-  default_prompt: "Use $ai-artifact-cleanup to scan this project for AI-generated clutter and safe-to-remove caches."
+  short_description: "Clean, quarantine, report, and package AI-generated project clutter safely"
+  default_prompt: "Use $ai-artifact-cleanup to scan this project, explain cleanup candidates, and create a clean handoff package when appropriate."

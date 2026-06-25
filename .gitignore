@@ -10,3 +10,7 @@ Thumbs.db
 .venv/
 venv/
 env/
+.ai-cleanup-trash/
+cleanup-report*.md
+clean-export*.zip
+*-clean.zip

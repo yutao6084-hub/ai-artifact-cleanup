@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 
@@ -142,6 +143,107 @@ class CleanupAiArtifactsTests(unittest.TestCase):
 
         self.assertEqual(payload["deleted_count"], 0)
         self.assertEqual(payload["low_risk_count"], 1)
+
+    def test_quarantine_moves_low_risk_artifacts_without_permanent_delete(self):
+        cleanup = load_cleanup_module()
+        self.write("notes.tmp")
+        self.write(".pytest_cache/CACHEDIR.TAG")
+
+        report = cleanup.cleanup_workspace(
+            self.root,
+            dry_run=False,
+            quarantine_dir=self.root / ".ai-cleanup-trash",
+        )
+
+        self.assertFalse((self.root / "notes.tmp").exists())
+        self.assertFalse((self.root / ".pytest_cache").exists())
+        self.assertTrue((self.root / ".ai-cleanup-trash" / "notes.tmp").exists())
+        self.assertTrue((self.root / ".ai-cleanup-trash" / ".pytest_cache" / "CACHEDIR.TAG").exists())
+        self.assertEqual(report.deleted_count, 0)
+        self.assertEqual(report.quarantined_count, 2)
+        self.assertTrue(all(item.action == "quarantined" for item in report.items if item.risk == "low"))
+
+    def test_clean_package_excludes_noise_and_writes_manifest(self):
+        cleanup = load_cleanup_module()
+        self.write("README.md", "# Demo\n")
+        self.write("src/app.py", "print('hello')\n")
+        self.write(".env", "SECRET=1\n")
+        self.write("__pycache__/thing.pyc")
+        self.write("node_modules/pkg/index.js")
+        self.write("preview-report.html", "<html>preview</html>")
+        package_path = self.root / "clean-export.zip"
+
+        manifest = cleanup.create_clean_package(self.root, package_path)
+
+        self.assertTrue(package_path.exists())
+        with zipfile.ZipFile(package_path) as archive:
+            names = set(archive.namelist())
+            payload = json.loads(archive.read("cleanup-manifest.json"))
+
+        self.assertIn("README.md", names)
+        self.assertIn("src/app.py", names)
+        self.assertIn("cleanup-manifest.json", names)
+        self.assertNotIn(".env", names)
+        self.assertNotIn("__pycache__/thing.pyc", names)
+        self.assertNotIn("node_modules/pkg/index.js", names)
+        self.assertNotIn("preview-report.html", names)
+        self.assertEqual(payload["included_count"], len(payload["included"]))
+        self.assertIn(".env", {item["relative_path"] for item in payload["excluded"]})
+        self.assertIn("preview-report.html", {item["relative_path"] for item in manifest["excluded"]})
+
+    def test_markdown_report_summarizes_actions_and_counts(self):
+        cleanup = load_cleanup_module()
+        self.write("notes.tmp")
+        report = cleanup.cleanup_workspace(self.root, dry_run=True)
+        report_path = self.root / "cleanup-report.md"
+
+        cleanup.write_markdown_report(report, report_path)
+
+        body = report_path.read_text(encoding="utf-8")
+        self.assertIn("# AI Artifact Cleanup Report", body)
+        self.assertIn("low=1", body)
+        self.assertIn("would_delete", body)
+        self.assertIn("notes.tmp", body)
+
+    def test_project_config_adds_protect_low_and_high_risk_patterns(self):
+        cleanup = load_cleanup_module()
+        self.write(
+            ".ai-cleanup.json",
+            json.dumps(
+                {
+                    "protect": ["keep/**"],
+                    "low_risk": ["scratch.agent"],
+                    "high_risk": ["danger/output.txt"],
+                    "package_exclude": ["private-notes.md"],
+                }
+            ),
+        )
+        self.write("keep/preview-report.html")
+        self.write("scratch.agent")
+        self.write("danger/output.txt")
+
+        report = cleanup.cleanup_workspace(self.root, dry_run=True)
+        by_path = {item.relative_path: item for item in report.items}
+
+        self.assertEqual(by_path["keep/preview-report.html"].risk, "protected")
+        self.assertEqual(by_path["keep/preview-report.html"].action, "skipped")
+        self.assertEqual(by_path["scratch.agent"].risk, "low")
+        self.assertEqual(by_path["danger/output.txt"].risk, "high")
+
+    def test_cli_explain_mode_reports_matching_rule_as_json(self):
+        self.write("preview-report.html", "<html>preview</html>")
+
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), str(self.root), "--explain", "preview-report.html", "--json"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(result.stdout)
+
+        self.assertEqual(payload["relative_path"], "preview-report.html")
+        self.assertEqual(payload["risk"], "high")
+        self.assertIn("preview", payload["reason"].lower())
 
 
 if __name__ == "__main__":
